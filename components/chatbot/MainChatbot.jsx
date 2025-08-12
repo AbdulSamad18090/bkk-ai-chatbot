@@ -1,10 +1,6 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
-import { MotionConfig, motion } from "framer-motion";
-import { Send, PanelLeftClose, PanelRightClose } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { ModeToggle } from "./ModeToggle";
+import { MotionConfig } from "framer-motion";
 import Sidebar from "./_components/Sidebar";
 import TypingDots from "./_components/TypingDots";
 import ChatAppHeader from "./_components/ChatAppHeader";
@@ -56,14 +52,15 @@ export default function MainChatbot() {
   const activeMessages = messagesByConv[activeConvId] || [];
 
   useEffect(() => {
-    // scroll to bottom on messages change
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeMessages, isThinking]);
 
-  function sendMessage() {
+  async function sendMessage() {
     if (!input.trim()) return;
+
     const text = input.trim();
     const id = Math.random().toString(36).slice(2, 9);
+
     const message = {
       id,
       role: "user",
@@ -74,34 +71,45 @@ export default function MainChatbot() {
       }),
     };
 
-    setMessagesByConv((prev) => {
-      const copy = { ...prev };
-      copy[activeConvId] = [...(copy[activeConvId] || []), message];
-      return copy;
-    });
+    // Add user message
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [activeConvId]: [...(prev[activeConvId] || []), message],
+    }));
 
     setInput("");
     setIsThinking(true);
 
-    // fake assistant reply streaming
-    setTimeout(() => {
-      const assistId = Math.random().toString(36).slice(2, 9);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: text }),
+      });
+
+      const data = await res.json();
+      console.log(data)
+
       const reply = {
-        id: assistId,
+        id: Math.random().toString(36).slice(2, 9),
         role: "assistant",
-        text: `Here's a helpful reply to: ${text}`,
+        text: data.output || "Sorry, I couldn't process that.",
         time: new Date().toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
         }),
       };
-      setMessagesByConv((prev) => {
-        const copy = { ...prev };
-        copy[activeConvId] = [...(copy[activeConvId] || []), reply];
-        return copy;
-      });
+
+      // Add assistant reply
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [activeConvId]: [...(prev[activeConvId] || []), reply],
+      }));
+    } catch (err) {
+      console.error("Error sending message:", err);
+    } finally {
       setIsThinking(false);
-    }, 1000 + Math.random() * 1200);
+    }
   }
 
   function newConversation() {
@@ -137,7 +145,6 @@ export default function MainChatbot() {
   return (
     <MotionConfig>
       <div className="h-screen w-screen bg-background flex">
-        {/* Sidebar */}
         <Sidebar
           sidebarOpen={sidebarOpen}
           conversations={conversations}
@@ -146,9 +153,7 @@ export default function MainChatbot() {
           newConversation={newConversation}
         />
 
-        {/* Main chat */}
         <main className="flex-1 flex flex-col min-w-0">
-          {/* Top bar */}
           <ChatAppHeader
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
@@ -157,7 +162,6 @@ export default function MainChatbot() {
             activeMessages={activeMessages}
           />
 
-          {/* Messages area */}
           <div className="flex-1 overflow-auto p-6 bg-gradient-to-b from-muted/50 to-background">
             <div className="mx-auto w-full max-w-3xl">
               <div className="space-y-3">
@@ -176,7 +180,6 @@ export default function MainChatbot() {
             </div>
           </div>
 
-          {/* Composer */}
           <Composer
             inputRef={inputRef}
             input={input}
