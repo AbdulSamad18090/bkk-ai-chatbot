@@ -3,34 +3,96 @@ import { NextResponse } from "next/server";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const COLLECTION_NAME = "db_schema"; // Must match what you used in loadSchemaToQdrant.js
+// Separate schema collections and documentation collections
+const SCHEMA_COLLECTIONS = [
+  "agri_bank_tenant_global_updated",
+  "bkk_v2_live_tenant_global_updated",
+];
+const DOC_COLLECTIONS = ["Wheat-Content-in-Roman-Urdu"];
 
 export async function POST(req) {
   const { query } = await req.json();
 
-  // 1️⃣ Connect to Qdrant
   const qdrant = new QdrantClient({
     url: process.env.NEXT_QDRANT_API_URL,
     apiKey: process.env.NEXT_QDRANT_API_KEY || undefined,
   });
 
-  // 2️⃣ Search schema chunks in Qdrant
-  const searchResult = await qdrant.search(COLLECTION_NAME, {
-    vector: await embedText(query),
-    limit: 5,
-  });
+  const queryVector = await embedText(query);
 
-  // Extract the most relevant schema pieces
-  const schemaContext = searchResult
-    .map(item => item.payload?.text || "")
-    .join("\n");
+  // Fetch schema results
+  let schemaResults = [];
+  for (const collection of SCHEMA_COLLECTIONS) {
+    try {
+      const res = await qdrant.search(collection, {
+        vector: queryVector,
+        limit: 15, // prioritizing schema details
+      });
+      schemaResults.push(
+        ...res.map((item) => ({
+          text: item.payload?.text || "",
+          score: item.score || 0,
+          collection,
+        }))
+      );
+    } catch (err) {
+      console.error(`Error searching schema collection ${collection}:`, err);
+    }
+  }
 
-  // 3️⃣ Prepare system prompt for Gemini
+  // Fetch documentation results
+  let docResults = [];
+  for (const collection of DOC_COLLECTIONS) {
+    try {
+      const res = await qdrant.search(collection, {
+        vector: queryVector,
+        limit: 5, // smaller limit for docs to avoid diluting schema
+      });
+      docResults.push(
+        ...res.map((item) => ({
+          text: item.payload?.text || "",
+          score: item.score || 0,
+          collection,
+        }))
+      );
+    } catch (err) {
+      console.error(`Error searching doc collection ${collection}:`, err);
+    }
+  }
+
+  // Sort and slice best results from each group
+  schemaResults = schemaResults.sort((a, b) => b.score - a.score).slice(0, 10);
+  docResults = docResults.sort((a, b) => b.score - a.score).slice(0, 5);
+
+  // Build contexts separately
+  const schemaContext = schemaResults
+    .map(
+      (r) => `-- From ${r.collection} (score: ${r.score.toFixed(3)})\n${r.text}`
+    )
+    .join("\n\n");
+
+  const docContext = docResults
+    .map(
+      (r) =>
+        `-- From Documentation (${r.collection}, score: ${r.score.toFixed(
+          3
+        )})\n${r.text}`
+    )
+    .join("\n\n");
+
+  console.log(`Schema context for query "${query}":\n${schemaContext}\n`);
+  console.log(`Documentation context for query "${query}":\n${docContext}\n`);
+
+  // Prompt
   const SYSTEM_PROMPT = `
     You are an expert SQL query generator.
     You are given PostgreSQL database schema context below (retrieved from vector search):
 
+    Schema Context:
     ${schemaContext}
+
+    ADDITIONAL DOCUMENTATION:
+    ${docContext}
 
     Your task:
     - Write a correct PostgreSQL SQL query using only the available tables and columns.
@@ -38,7 +100,7 @@ export async function POST(req) {
     - Output ONLY the SQL query inside triple backticks.
   `;
 
-  // 4️⃣ Call Gemini
+  // Call Gemini
   const genAI = new GoogleGenerativeAI(process.env.NEXT_GEMINI_API_KEY);
   const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
@@ -48,14 +110,13 @@ export async function POST(req) {
 
   const aiResponse = result.response.text();
 
-  // 5️⃣ Return result
   return NextResponse.json({
     success: true,
     output: aiResponse,
   });
 }
 
-// Helper — uses Gemini to create embeddings
+// Helper for embeddings
 async function embedText(text) {
   const genAI = new GoogleGenerativeAI(process.env.NEXT_GEMINI_API_KEY);
   const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
